@@ -1,0 +1,248 @@
+--- a/drivers/aic8800/aic8800_fdrv/aicwf_sdio.c
++++ b/drivers/aic8800/aic8800_fdrv/aicwf_sdio.c
+@@ -528,7 +528,7 @@
+ 
+     aicwf_sdio_pwrctl_timer(sdiodev, 0);
+     if(timer_pending(&sdiodev->rwnx_hw->p2p_alive_timer)){
+-        ret = del_timer(&sdiodev->rwnx_hw->p2p_alive_timer);}
++        ret = timer_delete(&sdiodev->rwnx_hw->p2p_alive_timer);}
+     sdio_dbg("%s\n",__func__);
+     if (sdiodev->pwrctl_tsk) {
+         complete(&sdiodev->pwrctrl_trgg);
+@@ -998,7 +998,7 @@
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
+     struct aic_sdio_dev *sdiodev = (struct aic_sdio_dev *) data;
+ #else
+-    struct aic_sdio_dev *sdiodev = from_timer(sdiodev, t, timer);
++    struct aic_sdio_dev *sdiodev = container_of(t, struct aic_sdio_dev, timer);
+ #endif
+ 
+     if (sdiodev->bus_if->state == BUS_DOWN_ST) {
+@@ -1081,7 +1081,7 @@
+     spin_lock_bh(&sdiodev->pwrctl_lock);
+     if (!duration) {
+         if (timer_pending(&sdiodev->timer))
+-            del_timer_sync(&sdiodev->timer);
++            timer_delete_sync(&sdiodev->timer);
+     } else {
+         sdiodev->active_duration = duration;
+         timeout = msecs_to_jiffies(sdiodev->active_duration);
+--- a/drivers/aic8800/aic8800_fdrv/rwnx_compat.h
++++ b/drivers/aic8800/aic8800_fdrv/rwnx_compat.h
+@@ -244,7 +244,13 @@
+ #define REGULATORY_IGNORE_STALE_KICKOFF 0
+ #else
+ #define STA_TDLS_INITIATOR(sta) sta->tdls_initiator
++#endif
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
++#ifndef REGULATORY_IGNORE_STALE_KICKOFF
++#define REGULATORY_IGNORE_STALE_KICKOFF 0
+ #endif
++#endif
+ 
+ 
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 18, 0)) && (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 12, 0))
+--- a/drivers/aic8800/aic8800_fdrv/rwnx_main.c
++++ b/drivers/aic8800/aic8800_fdrv/rwnx_main.c
+@@ -1054,8 +1054,7 @@
+         cfg80211_disconnected(vif->ndev, 0, NULL, 0, 0, GFP_KERNEL);
+         #endif
+     } else {
+-        mutex_lock(&vif->wdev.mtx);
+-        __acquire(&vif->wdev.mtx);
++        wiphy_lock(rwnx_hw->wiphy);
+         spin_lock_bh(&rwnx_hw->cb_lock);
+         rwnx_chanctx_unlink(vif);
+         rwnx_chanctx_link(vif, csa->ch_idx, &csa->chandef);
+@@ -1071,8 +1070,7 @@
+                 cfg80211_ch_switch_notify(vif->ndev, &csa->chandef);
+ #endif
+ 
+-        mutex_unlock(&vif->wdev.mtx);
+-        __release(&vif->wdev.mtx);
++        wiphy_unlock(rwnx_hw->wiphy);
+     }
+     rwnx_del_csa(vif);
+ }
+@@ -2894,7 +2892,7 @@
+     rwnx_vif = (struct rwnx_vif *)data;
+     rwnx_hw = rwnx_vif->rwnx_hw;
+     #else
+-    rwnx_hw = from_timer(rwnx_hw, t, p2p_alive_timer);
++    rwnx_hw = container_of(t, struct rwnx_hw, p2p_alive_timer);
+     rwnx_vif = rwnx_hw->p2p_dev_vif;
+     #endif
+ 
+@@ -3140,7 +3138,7 @@
+ #if 0
+ 	if (rwnx_vif == rwnx_hw->p2p_dev_vif) {
+ 		if (timer_pending(&rwnx_hw->p2p_alive_timer)) {
+-			del_timer_sync(&rwnx_hw->p2p_alive_timer);
++			timer_delete_sync(&rwnx_hw->p2p_alive_timer);
+ 		}
+ 	}
+ #endif
+@@ -3376,7 +3374,7 @@
+ 	if (rwnx_vif == rwnx_hw->p2p_dev_vif) {
+ 		rwnx_hw->is_p2p_alive = 0;
+ 		if (timer_pending(&rwnx_hw->p2p_alive_timer)) {
+-			del_timer_sync(&rwnx_hw->p2p_alive_timer);
++			timer_delete_sync(&rwnx_hw->p2p_alive_timer);
+ 		}
+ 		if (rwnx_vif->up) {
+ 			rwnx_send_remove_if(rwnx_hw, rwnx_vif->vif_index, true);
+@@ -4531,7 +4529,7 @@
+  *	interface. This should reject the call when AP mode wasn't started.
+  */
+ static int rwnx_cfg80211_change_beacon(struct wiphy *wiphy, struct net_device *dev,
+-                                       struct cfg80211_beacon_data *info)
++                                       struct cfg80211_ap_update *info)
+ {
+     struct rwnx_hw *rwnx_hw = wiphy_priv(wiphy);
+     struct rwnx_vif *vif = netdev_priv(dev);
+@@ -4545,7 +4543,7 @@
+ 	elem.dma_addr = 0;
+ 
+     // Build the beacon
+-    buf = rwnx_build_bcn(bcn, info);
++    buf = rwnx_build_bcn(bcn, &info->beacon);
+     if (!buf)
+         return -ENOMEM;
+ 
+@@ -4639,6 +4637,7 @@
+ #endif
+ 
+ static int rwnx_cfg80211_set_monitor_channel(struct wiphy *wiphy,
++                                             struct net_device *dev,
+                                              struct cfg80211_chan_def *chandef)
+ {
+     struct rwnx_hw *rwnx_hw = wiphy_priv(wiphy);
+@@ -4749,7 +4748,7 @@
+  *	have changed. The actual parameter values are available in
+  *	struct wiphy. If returning an error, no value should be changed.
+  */
+-static int rwnx_cfg80211_set_wiphy_params(struct wiphy *wiphy, u32 changed)
++static int rwnx_cfg80211_set_wiphy_params(struct wiphy *wiphy, int radio_idx, u32 changed)
+ {
+     return 0;
+ }
+@@ -4766,6 +4765,7 @@
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
+  struct wireless_dev *wdev,
+ #endif
++                                      int radio_idx,
+                                       enum nl80211_tx_power_setting type, int mbm)
+ {
+     #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 8, 0)
+@@ -5116,7 +5116,7 @@
+     if (rwnx_vif->vif_index == rwnx_hw->monitor_vif)
+     {
+         //retrieve channel from firmware
+-        rwnx_cfg80211_set_monitor_channel(wiphy, NULL);
++        rwnx_cfg80211_set_monitor_channel(wiphy, rwnx_vif->ndev, NULL);
+     }
+ 
+     //Check if channel context is valid
+@@ -5300,6 +5300,7 @@
+                                         struct cfg80211_chan_def *chandef
+                                     #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 15, 0))
+                                         , u32 cac_time_ms
++                                        , int link_id
+                                     #endif
+                                         )
+ {
+--- a/drivers/aic8800/aic8800_fdrv/rwnx_radar.c
++++ b/drivers/aic8800/aic8800_fdrv/rwnx_radar.c
+@@ -1399,7 +1399,7 @@
+                     #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
+                        &ctxt->chan_def,
+                     #endif
+-                       NL80211_RADAR_CAC_FINISHED, GFP_KERNEL);
++                       NL80211_RADAR_CAC_FINISHED, GFP_KERNEL, -1);
+     rwnx_send_apm_stop_cac_req(rwnx_hw, radar->cac_vif);
+     rwnx_chanctx_unlink(radar->cac_vif);
+ 
+@@ -1499,7 +1499,7 @@
+                         #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
+                            &ctxt->chan_def,
+                         #endif
+-                           NL80211_RADAR_CAC_ABORTED, GFP_KERNEL);
++                           NL80211_RADAR_CAC_ABORTED, GFP_KERNEL, -1);
+         rwnx_chanctx_unlink(radar->cac_vif);
+     }
+ 
+--- a/drivers/aic8800/aic8800_fdrv/rwnx_rx.c
++++ b/drivers/aic8800/aic8800_fdrv/rwnx_rx.c
+@@ -456,7 +456,7 @@
+     if (amsdu) {
+         int count;
+         ieee80211_amsdu_to_8023s(skb, &list, rwnx_vif->ndev->dev_addr,
+-                                 RWNX_VIF_TYPE(rwnx_vif), 0, NULL, NULL);
++                                 RWNX_VIF_TYPE(rwnx_vif), 0, NULL, NULL, false);
+ 
+         count = skb_queue_len(&list);
+         if (count > ARRAY_SIZE(rwnx_hw->stats.amsdus_rx))
+@@ -1397,7 +1397,7 @@
+     preorder_ctrl->enable = false;
+     spin_unlock_irqrestore(&preorder_ctrl->reord_list_lock, flags);
+     if (timer_pending(&preorder_ctrl->reord_timer))
+-        ret = del_timer_sync(&preorder_ctrl->reord_timer);
++        ret = timer_delete_sync(&preorder_ctrl->reord_timer);
+     cancel_work_sync(&preorder_ctrl->reord_timer_work);
+ 
+     return 0;
+@@ -1423,7 +1423,7 @@
+ 		if(preorder_ctrl->enable){
+ 			preorder_ctrl->enable = false;
+ 	        if (timer_pending(&preorder_ctrl->reord_timer)) {
+-	            ret = del_timer_sync(&preorder_ctrl->reord_timer);
++	            ret = timer_delete_sync(&preorder_ctrl->reord_timer);
+ 	        }
+ 	        cancel_work_sync(&preorder_ctrl->reord_timer_work);
+ 		}
+@@ -1437,7 +1437,7 @@
+             reord_rxframe_free(&rx_priv->freeq_lock, &rx_priv->rxframes_freequeue, &req->rxframe_list);
+         }
+ 
+-		AICWFDBG(LOGINFO, "reord dinit in_irq():%d in_atomic:%d in_softirq:%d\r\n", (int)in_irq()
++		AICWFDBG(LOGINFO, "reord dinit in_irq():%d in_atomic:%d in_softirq:%d\r\n", (int)in_hardirq()
+ 			,(int)in_atomic(), (int)in_softirq());
+         spin_unlock_bh(&preorder_ctrl->reord_list_lock);
+     }
+@@ -1632,7 +1632,7 @@
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
+ 	struct reord_ctrl *preorder_ctrl = (struct reord_ctrl *)data;
+ #else
+-	struct reord_ctrl *preorder_ctrl = from_timer(preorder_ctrl, t, reord_timer);
++	struct reord_ctrl *preorder_ctrl = container_of(t, struct reord_ctrl, reord_timer);
+ #endif
+ 
+ 	AICWFDBG(LOGTRACE, "%s Enter \r\n", __func__);
+@@ -1795,7 +1795,7 @@
+         }
+     } else {
+ 		if(timer_pending(&preorder_ctrl->reord_timer)) {
+-	        	ret = del_timer(&preorder_ctrl->reord_timer);
++	        	ret = timer_delete(&preorder_ctrl->reord_timer);
+ 		}
+     }
+ 
+@@ -2037,7 +2037,7 @@
+         hdr = (struct ieee80211_hdr *)(skb->data + msdu_offset);
+         rwnx_vif = rwnx_rx_get_vif(rwnx_hw, hw_rxhdr->flags_vif_idx);
+         if (rwnx_vif) {
+-            cfg80211_rx_spurious_frame(rwnx_vif->ndev, hdr->addr2, GFP_ATOMIC);
++            cfg80211_rx_spurious_frame(rwnx_vif->ndev, hdr->addr2, -1, GFP_ATOMIC);
+         }
+         goto end;
+     }
+@@ -2129,7 +2129,7 @@
+ 
+                 if (hw_rxhdr->flags_is_4addr && !rwnx_vif->use_4addr) {
+                     cfg80211_rx_unexpected_4addr_frame(rwnx_vif->ndev,
+-                                                       sta->mac_addr, GFP_ATOMIC);
++                                                       sta->mac_addr, -1, GFP_ATOMIC);
+                 }
+             }
+ 
