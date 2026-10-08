@@ -1,7 +1,15 @@
-# AIC8800 Linux Driver (ported to kernel 7.0)
+# AIC8800 Linux Driver
 
-AIC (Aic8800 / 8800DC) dual-mode **Wi-Fi + Bluetooth** driver working over **USB** and
-**SDIO** interfaces, plus the `aicrf_test` host-side RF/smoke test tool.
+Linux driver for the **AICSemi (爱科微) AIC8800 / AIC8800FC** family of budget
+Wi-Fi/BT USB adapter chips — the silicon commonly sold by COMFAST, UGREEN, Tenda
+and others under “Wi-Fi 6 AX300” marketing. AIC8800 is a dual-mode **Wi-Fi +
+Bluetooth** SoC; the 8800FC variant used as a USB dongle works over **USB** (and
+SDIO on embedded platforms). The tree also carries the vendor `aicrf_test` host-side
+RF/smoke test tool.
+
+> **Chip caveat: it is 2.4 GHz-only.** Despite the “AX300” branding this class of
+> dongle does not support 5 GHz. Point `wpa_supplicant` / NetworkManager at a
+> **2.4 GHz SSID**, or it will never connect.
 
 This tree is a working drop of the original
 `aic8800fdrvpackage_amd64_2023_0807.deb` driver sources (2021–2022 vintage), patched
@@ -9,6 +17,30 @@ so that the modules **build, install and run on Linux kernel 7.0** (Ubuntu 26.04
 `7.0.0-34-generic`, x86_64).
 
 Verified live on `lzw@192.168.1.133`.
+
+---
+
+## Background — why a stock AIC dongle needs this at all
+
+The Windows driver disc these dongles ship with boots the device in **USB
+Mass-Storage (MSC) mode**: plug it in and Linux sees `a69c:5721 aicsemi AIC MSC` —
+a USB stick holding Windows drivers, not a NIC. No kernel driver means Linux has
+no tunable to flip that bit, so the standard trick is:
+
+1. a **udev rule** that detects the `a69c:5721` device on insertion and `eject`s the
+   MSC volume (see [`aic.rules`](aic.rules));
+2. the vendor **out-of-tree kernel driver + firmware**, which then owns the device,
+   switches it to NIC mode, and brings the interface up as `wlx…`.
+
+That driver is not upstream (and won't be merged as-is), so you are on a permanent
+**“needs driver + mode switch + recompile on every kernel update”** maintenance
+cycle. On a stock install that means rebuilding the modules by hand per kernel;
+wrapping the tree in **DKMS** automates it — DKMS recompiles and reinstalls the
+modules automatically after every `linux-generic` update.
+
+This repo exists because the vendor's 2021–2022 driver source no longer compiles on
+modern kernels (see *Patches applied* below); **the `.deb` they ship targets
+≤ 24.04 and would be delicate to force onto kernel 7.0**.
 
 ---
 
@@ -55,7 +87,8 @@ The complete unified diff is in [`kernel-7.0.patch`](kernel-7.0.patch).
 - Firmware (`aic8800DC` blobs) lives under `/lib/firmware/`; the udev rule
   (`aic.rules`) ejects the USB MSC dongle on insertion so the wireless device takes
   over. The USB device (vendor `a69c`) is handled by the AIC driver, interface comes
-  up as `wlx…`.
+  up as `wlx…`. It enumerates 2.4 GHz only — configure your **2.4 GHz SSID**
+  credentials in NetworkManager / `wpa_supplicant` on that `wlx…` interface.
 
 ## Build & install (native Ubuntu / Debian)
 
@@ -100,7 +133,24 @@ make            # produces wifi_test, bt_test (optionally cross-compiled)
 - Kernel modules are **per-kernel**: after a kernel upgrade you must rebuild and
   reinstall (`make && sudo make install`) with the source and, if needed,
   re-apply `kernel-7.0.patch`. The live changes are **not** repackaged into a `.deb`.
+- **Want DKMS to handle kernel upgrades?** On Ubuntu/Debian the conventional setup
+  is to wrap the sources in a DKMS package (`dkms add/build/install`), which then
+  recompiles + reinstalls the modules automatically on every `linux-generic`
+  update — same maintenance model popular guides describe. The repo as-is ships
+  the plain kbuild tree; wrapping it is a follow-up.
 - Vendor `Makefile` also has Rockchip/Allwinner/Amlogic Android platform presets
   (arm/arm64 cross-compile); Ubuntu/x86_64 is selected by `CONFIG_PLATFORM_UBUNTU := y`.
 - `REGULATORY_IGNORE_STALE_KICKOFF` (`rwnx_compat.h`) is only a compile-time compat
   shim for kernels ≥ 6.9; ignore the actual flags-scan message about removal.
+
+## Alternatives / upstream-looking places to start
+
+If a maintained-DKMS experience beats maintaining this fork by hand, the community
+package **`Kiborgik/aic8800dc-linux-patched`** is the best-maintained option for
+kernel 6.2 → 7.1 (CI-tested, covering exactly `7.0.0-34`): it is DKMS-based, ships
+firmware + udev rules, and handles the `a69c:5721` mode switch out of the box.
+
+Official UGREEN/AICSemi `.deb`s exist too but target ≤ 24.04 and are more delicate
+to fight onto kernel 7.0 — which is precisely why this repo's `kernel-7.0.patch`
+was written. This tree remains useful as the *minimal* patched source + the
+complete unified diff for anyone who needs to re-derive the port.
