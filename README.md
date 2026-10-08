@@ -16,6 +16,13 @@ This tree is a working drop of the original
 so that the modules **build, install and run on Linux kernel 7.0** (Ubuntu 26.04,
 `7.0.0-34-generic`, x86_64).
 
+The `.deb` was obtained from **COMFAST's CF-940AX driver page** (the CF-940AX is
+the COMFAST-branded version of this AIC8800FC dongle):
+
+- Page: <https://www.comfast.com.cn/index.php?m=content&c=index&a=show&catid=30&id=742>
+- Title: “CF-940AX 驱动下载” (2023-12-20) — “驱动支持：win7/10/11，linux”,
+  with separate **Linux** and **Windows** download links.
+
 Verified live on `lzw@192.168.1.133`.
 
 ---
@@ -144,6 +151,10 @@ make            # produces wifi_test, bt_test (optionally cross-compiled)
   shim for kernels ≥ 6.9; ignore the actual flags-scan message about removal.
 
 ## Alternatives / upstream-looking places to start
+
+> **Upstream source of this tree:** the Linux driver link on COMFAST's CF-940AX
+> page (<https://www.comfast.com.cn/index.php?m=content&c=index&a=show&catid=30&id=742>)
+> is where `aic8800fdrvpackage_amd64_2023_0807.deb` originally came from.
 
 If a maintained-DKMS experience beats maintaining this fork by hand, the community
 package **`Kiborgik/aic8800dc-linux-patched`** is the best-maintained option for
